@@ -1,0 +1,12 @@
+{
+  "name": "org.pinf.lib",
+  "version": "0.1.0",
+  "dependencies": {
+    "q": "^1.2.0"
+  },
+  "config": {
+    "pio.deploy.converter": {
+      "name": "nodejs-lib"
+    }
+  }
+}
