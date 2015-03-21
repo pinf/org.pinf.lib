@@ -48,7 +48,7 @@ exports.for = function (module, init, implementation) {
 				}
 				return API.Q.denodeify(function (callback) {
 					return API.loadProgramDescriptor(function (err, programDescriptor) {
-						if (err) return callback(err);
+						if (err) return callback(err);						
 						API.programDescriptor = programDescriptor;
 						return callback(null);
 					});
@@ -57,16 +57,37 @@ exports.for = function (module, init, implementation) {
 				});
 			}
 
-		    function init (impl) {
-	        	API.VERBOSE = program.debug || program.verbose || false;
-	        	API.DEBUG = program.debug || false;
-	        	return ensureProgramLoaded(API.sub()).then(function (API) {
-			        return API.Q.when(impl.for(API));
+			function forEachProgram (API, handler) {
+				// TODO: Assemble promise chain based on depends order.
+	        	return ensureProgramLoaded(API).then(function (api) {
+					var done = API.Q.resolve();
+	        		var config = api.programDescriptor.configForLocator(API.LOCATOR.fromUri("genesis.pinf.org"));
+					API.console.debug("Using 'genesis.pinf.org' config from '" + api.programDescriptor._path + "':", config);
+	        		if (config.programs) {
+	        			Object.keys(config.programs).forEach(function (programId) {
+	        				return API.Q.when(done, function () {
+	        					var locator = api.programDescriptor.locatorForDeclaration(config.programs[programId]);
+        						return forEachProgram(API.sub(locator.getAbsolutePath()), handler);
+	        				});
+	        			});
+	        		}
+	        		return API.Q.when(done, function () {
+	        			if (!api.programDescriptor.isBootable()) {
+	        				return;
+	        			}
+				        return API.Q.when(handler(api));
+	        		});
 	        	});
+			}
+
+		    function init (api, impl) {
+		        return API.Q.when(impl.for(api));
 		    }
 
 		    function actor (impl, wire, callback) {
 		        return function () {
+		        	API.VERBOSE = program.debug || program.verbose || false;
+		        	API.DEBUG = program.debug || false;
 		            if (!program.plugin) {
 		                return callback("ERROR: '--plugin <path>' not set!");
 		            }
@@ -82,12 +103,14 @@ exports.for = function (module, init, implementation) {
 		                })();
 		            }
 		            actor.acted = true;
-		            return init(impl).then(function (api) {
-	                	API.console.verbose("Wire actor:", program.plugin);
-	                	augmentAPI(API, api);
-		                return wire(api).then(function () {
-		                    return callback();
-		                });
+		            return forEachProgram(API, function (api) {
+			            return init(api, impl).then(function (_api) {
+		                	API.console.verbose("Wire actor:", program.plugin);
+		                	augmentAPI(api, _api);
+			                return wire(_api).then(function () {
+			                    return callback();
+			                });
+			            });
 		            }).fail(callback);
 		        };
 		    }
