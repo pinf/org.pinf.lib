@@ -1,6 +1,6 @@
 {
   "name": "org.pinf.lib",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "dependencies": {
     "bash.origin": "0.1.x",
     "commander": "^2.7.1",
