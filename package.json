@@ -4,6 +4,8 @@
   "dependencies": {
     "bash.origin": "0.1.x",
     "commander": "^2.7.1",
+    "deepmerge": "^0.2.7",
+    "escape-regexp-component": "^1.0.2",
     "fs-extra": "^0.16.5",
     "pinf-for-nodejs": "0.1.x",
     "pinf-it-bundler": "0.1.x",
