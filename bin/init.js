@@ -3,6 +3,9 @@ require("require.async")(require);
 
 const Q = require("q");
 
+//const DEBUG = !!process.env.VERBOSE;
+const DEBUG = false;
+
 
 exports.for = function (module, init, implementation) {
 
@@ -11,16 +14,18 @@ exports.for = function (module, init, implementation) {
 	}
 
     function augmentAPI (API, api) {
-    	var _api = {};
     	Object.keys(api).forEach(function (name) {
+    		if (name !== "spin" && name !== "turn") {
+    			return;
+    		}
     		var impl = api[name];
-    		_api[name] = function () {
-    			var pluginId = (API.getPluginUid && API.getPluginUid()) || API.PATH.basename(API.___program_root_path);
+    		api[name] = function () {
+    			var pluginId = (API.getPluginName && API.getPluginName()) || API.PATH.basename(API.getRootPath());
             	API.console.verbose("Call '" + name + "' on '" + pluginId + "' for:", API.getRootPath());
     			return impl.apply(api, Array.prototype.slice.call(arguments));
     		}
     	});
-    	return _api;
+    	return api;
     }
 
 	return Q.when(require("../lib/_common").for(module, function (API, callback) {
@@ -50,6 +55,7 @@ exports.for = function (module, init, implementation) {
 					return API.Q.resolve(API);
 				}
 				return API.Q.denodeify(function (callback) {
+
 					return API.loadProgramDescriptor(function (err, programDescriptor) {
 						if (err) return callback(err);						
 						API.programDescriptor = programDescriptor;
@@ -61,15 +67,26 @@ exports.for = function (module, init, implementation) {
 			}
 
 			function forEachProgram (API, handler) {
+
+		    	if (DEBUG) console.log("forEachProgram");
+
 				// TODO: Assemble promise chain based on depends order.
 	        	return ensureProgramLoaded(API).then(function (api) {
+
+			    	if (DEBUG) console.log("forEachProgram - program loaded");
+
 					var done = API.Q.resolve();
-	        		var config = api.programDescriptor.configForLocator(API.LOCATOR.fromUri("genesis.pinf.org"));
-					API.console.debug("Using 'genesis.pinf.org' config from '" + api.programDescriptor._path + "':", config);
+	        		var config = api.programDescriptor.configForLocator(API.LOCATOR.fromUid("genesis.pinf.org"));
+					API.console.debug("Using program config from '" + api.programDescriptor._path + "'");
 	        		if (config.programs) {
 	        			Object.keys(config.programs).forEach(function (programId) {
 	        				done = API.Q.when(done, function () {
 	        					var locator = api.programDescriptor.locatorForDeclaration(config.programs[programId]);
+
+				            	API.console.debug("#########################");
+				            	API.console.debug("######################### SUB PROGRAM FOR: ", locator.getAbsolutePath());
+				            	API.console.debug("#########################");
+
         						return forEachProgram(api.sub(locator.getAbsolutePath(), {
 									getDeclaringPathId: function () {
 										return programId;
@@ -79,13 +96,45 @@ exports.for = function (module, init, implementation) {
 									},
 			                    	getRuntimeDescriptorPath: function () {
 										return this.PATH.join(this.getDeclaringRootPath(), "..", this.getDeclaringPathId() || "", "program.rt.json");
+			                    	},
+			                    	getBootConfigId: function () {
+			                    		if (
+			                    			!this.programDescriptor._data.boot ||
+			                    			!this.programDescriptor._data.boot.config
+			                    		) {
+			                    			throw new Error("Property 'boot.config' not set in descriptor: " + API.getRootPath());
+			                    		}
+			                    		return this.programDescriptor._data.boot.config;
+			                    	},
+			                    	getPluginUid: function () {
+/*
+if (!descriptor || !descriptor.uid) {
+throw new Error("getPluginUid - no descriptor");			                    		
+
+}	
+*/
+throw new Error("getPluginUid STOP");
+			                    		return (
+			                    			locator.getConfig() &&
+			                    			locator.getConfig()["genesis.pinf.org/0"] &&
+			                    			locator.getConfig()["genesis.pinf.org/0"].for
+			                    		) || API.getPluginUid();
 			                    	}
-        						}), handler);
+        						}), handler).then(function () {
+
+					            	API.console.debug("#########################");
+					            	API.console.debug("######################### SUB PROGRAM DONE FOR: ", locator.getAbsolutePath());
+					            	API.console.debug("#########################");
+
+        						});
 	        				});
 	        			});
 	        		}
 	        		return API.Q.when(done, function () {
 	        			if (!api.programDescriptor.isBootable()) {
+
+			            	API.console.debug("Skip execute of '" + api.getRootPath() + "' as it is not bootable!");
+
 	        				return;
 	        			}
 				        return API.Q.when(handler(api));
@@ -103,9 +152,18 @@ exports.for = function (module, init, implementation) {
 		    }
 
 		    function actor (action, impl, wire, callback) {
+
 		        return function () {
 		        	API.VERBOSE = program.debug || program.verbose || false;
 		        	API.DEBUG = program.debug || false;
+
+			    	if (DEBUG) console.log("VERBOSE: " + API.VERBOSE);
+			    	if (DEBUG) console.log("DEBUG: " + API.DEBUG);
+
+			    			if (API.DEBUG) {
+			    				Q.longStackSupport = true;
+			    			}
+
 		            if (!program.for) {
 		                return callback("ERROR: '--for <path>' not set!");
 		            }
@@ -114,199 +172,505 @@ exports.for = function (module, init, implementation) {
 		                return callback("ERROR: '--for " + forPath + "' path not found!");
 		            }
 
-            		// TODO: Load and parse plugin descriptor using pinf-it-package-insight.
-                	var pluginDescriptor = require(API.PATH.join(forPath, "package.json"));
+		            actor.acted = true;
 
-		            API.runPlugin = function () {
-		            	var self = this;
+                	return API.PACKAGE.fromFile(API.PATH.join(forPath, "package.json"), function (err, _pluginDescriptor) {
+                		if (err) return callback(err);
+
+                		var pluginDescriptor = _pluginDescriptor._data;
+
+				    	if (DEBUG) console.log("UID: " + pluginDescriptor.uid);
+
+	                	if (!pluginDescriptor.uid) {
+			                return callback(new Error("'uid' property not set for plugin descriptor: " + API.PATH.join(forPath, "package.json")));
+	                	}
+
+	                	pluginDescriptor.name = pluginDescriptor.name || API.PATH.basename(API.PATH.dirname(_pluginDescriptor._path));
+
+										API.getBootConfigId = function () {
+											if (
+												!this.programDescriptor._data ||
+												!this.programDescriptor._data.boot ||
+												!this.programDescriptor._data.boot.config
+											) {
+												throw new Error("No 'boot.config' property set in '" + this.getRootPath() + "'!");
+											}
+											return this.programDescriptor._data.boot.config;
+										}
+
+	                	API.getPluginName = function () {
+	                		return pluginDescriptor.name || pluginDescriptor.uid.replace(/\//, "~");
+	                	}
+
+	                	API.getPluginUid = function () {
+	                		return pluginDescriptor.uid;
+	                	}
+
+			            API.runFor = function () {
+			            	var self = this;
+
+					    			if (DEBUG) console.log("FOR");
 
 	                	var resolvedConfig = {};
 
 		                return self.Q.denodeify(function (callback) {
 
-							function locate (uri, callback) {
+		                	function loadRuntimeDescriptor (callback) {
+		                		var runtimeDescriptorPath = self.getRuntimeDescriptorPath();
+		                		return API.FS.exists(runtimeDescriptorPath, function (exists) {
+		                			if (!exists) return callback(null, {});
+													API.console.debug("Load runtime descriptor from '" + runtimeDescriptorPath + "'");
+		                			return API.FS.readJson(runtimeDescriptorPath, callback);
+		                		});
+		                	}
 
-								// TODO: Use configurable lookup path.
-								// TODO: Dynamically download plugins.
+		                	return loadRuntimeDescriptor(function (err, runtimeDescriptor) {
+		                		if (err) return callback(err);
 
-								var uriParts = uri.split("/");
-								var path = forPath.replace(pluginDescriptor.name, uriParts[uriParts.length-2]);
-								return API.FS.exists(path, function (exists) {
-									if (!exists) {
-										return callback(new Error("Plugin not found at located path '" + path + "'!"));
-									}
-									return callback(null, path);
-								});
-							}
+                	var plugins = {};
+                	function loadAndRunPlugins (locator, history, callback) {
 
-		                	var plugins = {};
-		                	function loadAndRunPlugins (locator, callback) {
-			                	var parsedConfig = self.programDescriptor.parsedConfigForLocator(locator);
-								
-								if (plugins[parsedConfig.id]) {
-									return callback(new Error("Plugin '" + parsedConfig.id + "' is already loaded! There must be a circular dependency!"));
-								}
-								plugins[parsedConfig.id] = true;
+									  // TODO: Move this into 'org.pinf.to/lib/vortex-wrapper.js'
 
-								function load (callback) {
-									return locate(parsedConfig.id, function (err, path) {
-										if (err) return callback(err);
+	                	var parsedConfig = self.programDescriptor.parsedConfigForLocator(locator);
 
-					                	self.console.verbose("Load plugin:", path);
+	                	if (!parsedConfig) {
+	                		console.log("self.programDescriptor", self.programDescriptor);
+	                		return callback(new Error("Error getting parsed config for locator: " + JSON.stringify(locator)));
+	                	}
 
-			                    		// TODO: Load and parse plugin descriptor using pinf-it-package-insight.
-					                	var pluginDescriptor = require(self.PATH.join(path, "package.json"));
+										parsedConfig.setResolved(resolvedConfig);
 
-					                    return require.async(path, function (plugin) {
-						                	self.console.debug("Plugin loaded:", path);
-									    	try {
-									    		var API = self.sub(null, {
-							                    	getPluginUid: function () {
-							                    		if (!pluginDescriptor.uid) {
-							                    			throw new Error("Plugin descriptor '" + self.PATH.join(path, "package.json") + "' does not declare 'uid'!");
-							                    		}
-							                    		return pluginDescriptor.uid;
-							                    	}
-							                    });
-												var api = plugin.for(API);
-							                	api = augmentAPI(API, api);
+										if (plugins[parsedConfig.id]) {
+											if (history.length > 50) {
+												console.error("history", history);
+												return callback(new Error("Plugin '" + parsedConfig.id + "' is already loaded! There must be a circular dependency!"));
+											}
+											return callback(null);
+										}
+										plugins[parsedConfig.id] = true;
 
-												function run (api, callback) {
+										function load (_callback) {
 
-													parsedConfig.setResolved(resolvedConfig);
+		                	var callback = function (err) {
+												if (err) {
+													err.message += " (at node '" + parsedConfig.id + "')";
+													err.stack += "\n(at node '" + parsedConfig.id + "')";
+												}
+												return _callback.apply(null, arguments);
+		                	}
 
-													function prepare (config) {
-														function makeConfigHash (config) {
-															// TODO: Use sorted JSON.
-															var configHash = JSON.stringify(config);//API.CRYPTO.createHash("sha1").update(JSON.stringify(config)).digest("hex");
-															return configHash;
-														}
-														var configHashPath = API.PATH.join(API.getTargetPath(), ".pinf.config.hash");
-														var configHash = makeConfigHash(config);
+											function initNode (descriptor, exports, callback) {
 
-														return Q.denodeify(function (callback) {
-
-															function remove (reason, callback) {
-																return API.FS.exists(API.getTargetPath(), function (exists) {
-																	if (!exists) {
-																		// Nothing to remove because it does not yet exit.
-																		return callback(null);
-																	}
-																	API.console.verbose("Removing '" + API.getTargetPath() + "' due to " + reason + "!");
-																	return API.FS.remove(API.getTargetPath(), callback);
-																});
+								    		var API = self.sub(null, {
+											    getTargetPath: function () {
+														return this.PATH.join(this.getPinfDirpath(), parsedConfig.id.replace(/\//g, "~"));
+											    },
+		                    	getNodeAlias: function () {
+		                    		return parsedConfig.config.$to || null;
+		                    	},
+		                    	getNodeId: function () {
+		                    		return parsedConfig.id;
+		                    	},
+		                    	getPluginUid: function () {
+throw new Error("getPluginUid");			                    		
+if (!descriptor || !descriptor.uid) {
+console.log("parsedConfig", parsedConfig);
+throw new Error("getPluginUid - no descriptor");			                    		
+}							                    		
+		                    		return descriptor.uid;
+		                    	},
+		                    	setFileTreeUsedFor: function (resolvedConfig, path, options) {
+		                    		var self = this;
+														return API.Q.nbind(self.getFileTreeInfoFor, self)(path, options).then(function (info) {
+															// TODO: This must follow directory conventions for where aspect files are stored!
+															//       Make configurable so it can also point to '.pinf/github.com~pinf~org.pinf.lib~0' etc ...
+															if (!resolvedConfig[".pinf.genesis.pinf.org~0"]) {
+																resolvedConfig[".pinf.genesis.pinf.org~0"] = {};
 															}
-
-															return API.FS.exists(configHashPath, function (exists) {
-																if (!exists) {
-																	if (action !== "turn") {
-																		return callback(new Error("Must turn '" + API.getTargetPath() + "' before you can '" + action + "' it!"));
-																	}
-																	return remove("previous config hash not found", callback);
-																}
-																return API.FS.readFile(configHashPath, "utf8", function (err, previousConfigHash) {
-																	if (err) return callback(err);
-																	if (configHash === previousConfigHash) {
-																		return callback(null);
-																	}
-																	return remove("config hash having changed from '" + previousConfigHash + "' to '" + configHash, callback);
-																});
-															});
-														})().then(function () {
-															return function (config, callback) {
-																return API.FS.outputFile(configHashPath, makeConfigHash(config), "utf8", callback);
-															};
+															// TODO: Optionally add more info from 'info' to config.
+															resolvedConfig[".pinf.genesis.pinf.org~0"]["usedPaths"] = info.paths;
+															return resolvedConfig;
 														});
+		                    	},
+		                    	// TODO: Access to these methods must be policed by a security layer
+		                    	//       that manages communication and access between components.
+		                    	POLICIFY_getUsedPaths: function () {
+		                    		return API.Q.fcall(function () {
+		                    			var paths = {};
+		                    			for (var configId in resolvedConfig) {
+		                    				if (
+																	resolvedConfig[configId][".pinf.genesis.pinf.org~0"] &&
+																	resolvedConfig[configId][".pinf.genesis.pinf.org~0"]["usedPaths"]
+		                    				) {
+			                    				paths[configId] = resolvedConfig[configId][".pinf.genesis.pinf.org~0"]["usedPaths"];
+		                    				}
+		                    			}
+		                    			return paths;
+		                    		});
+		                    	}
+		                    });
+
+												function contextualizeExports (exports, API, callback) {
+													if (!exports) {
+														return callback(null, null);
 													}
+													try {
 
-													// Call `turn`, `spin` and others (determined by `action`) on
-													// plugin that has already been initialized with `for(API)`.
+														if (!(exports.for || exports.main)) {
+															throw new Error("Module for '" + parsedConfig.id + "' does not export 'main(API)' nor 'for(API)'!");
+														}
 
-													var worker = null;
-													var alias = null;
-													var config = parsedConfig;
-													if (action !== "turn") {
-														var runtimeDescriptor = require(API.getRuntimeDescriptorPath());
-														config = null;
+														var api = (exports.for || exports.main)(API);
+//									        api = augmentAPI(API, api);
+					                	return callback(null, api);
+			                    } catch (err) {
+			                    	return callback(err);
+			                    }
+												}
+
+												return contextualizeExports(exports, API, function (err, api) {
+													if (err) return callback(err);
+
+													// Run the given action on the node.
+										    														
+													function resolve (config) {
+
+														var configHashPath = API.PATH.join(API.getTargetPath(), ".pinf.config.hash");
+
+														// NOTE: We ALWAYS resolve the config on every turn.
+														//       Each module should cache its responses on subsequent
+														//       calls if nothing has changed in the input!
+														var defaultResolve = function (resolver, config, previousResolvedConfig) {
+											        API.console.verbose("Call default resolver for:", API.getRootPath());
+															return resolver({});
+														}
+														var resolver = function (resolverApi) {
+								            	API.console.debug("Resolve config using API:", resolverApi);
+															return config.resolve(resolverApi).fail(function (err) {
+																err.message += " (while resolving parsed config using resolverApi for node '" + parsedConfig.id + "')";
+																err.stack += "\n(while resolving parsed config using resolverApi for node '" + parsedConfig.id + "')";
+																throw err;
+															});
+														}
+														var previousResolvedSectionConfig = null;
 														for (alias in runtimeDescriptor) {
-															if (runtimeDescriptor[alias].$context === pluginDescriptor.uid) {
-																config = runtimeDescriptor[alias];
+															if (runtimeDescriptor[alias].$context === API.getNodeId()) {
+																previousResolvedSectionConfig = runtimeDescriptor[alias];
 																break;			
 															}
 														}
-														if (!config) {
-															return callback(new Error("Runtime config for context/id '" + pluginDescriptor.uid + "' not found!"));
-														}
-													}
-													return prepare(config).then(function (writeHash) {
-														return Q.when(api[action](config)).then(function (result) {
-															if (action === "turn") {
-																if (result) {
-																	config = result;
-																	resolvedConfig[result.$to] = result;
-																	// TODO: Make this a proper JSON-LD context.
-																	result.$context = pluginDescriptor.uid;
 
-																	self.console.debug("Plugin result for '" + path + "':", JSON.stringify(result, null, 4));
-																} else {
-																	throw new Error("Plugin '" + path + "' did not return its resolved configuration!");
+//																	API.console.debug("Previous resolved config for '" + API.getTargetPath() + "':", previousResolvedSectionConfig);
+
+														if (!api) {
+															API.console.debug("No plugin code loaded for '" + parsedConfig.id + "'!", parsedConfig);
+														}
+
+							            	API.console.verbose("Call resolve() on '" + parsedConfig.id + "' for:", API.getRootPath());
+
+														return API.Q.when((api && api.resolve && api.resolve(resolver, config, previousResolvedSectionConfig)) || defaultResolve(resolver, config, previousResolvedSectionConfig)).then(function (resolvedSectionConfig) {
+
+															var changed = true;
+
+															// TODO: Make this a proper JSON-LD context.
+															resolvedSectionConfig.$context = API.getNodeId();
+
+															// TODO: Use sorted JSON.
+//															var configHash = API.CRYPTO.createHash("sha1").update(JSON.stringify(config)).digest("hex");
+															var previousConfigHash = JSON.stringify(previousResolvedSectionConfig, null, 4);
+															var configHash = JSON.stringify(resolvedSectionConfig, null, 4);
+
+//																		API.console.debug("New resolved config for '" + API.getTargetPath() + "':", resolvedSectionConfig);
+
+															return Q.denodeify(function (callback) {
+
+																function remove (reason, callback) {
+																	return API.FS.exists(API.getTargetPath(), function (exists) {
+																		if (!exists) {
+																			// Nothing to remove because it does not yet exit.
+																			return callback(null);
+																		}
+																		API.console.debug("Removing '" + API.getTargetPath() + "' due to " + reason + "!");
+																		return API.FS.remove(API.getTargetPath(), callback);
+																	});
 																}
-															} else {
-																resolvedConfig[alias] = config;
-															}
-															return writeHash(config, function (err) {
-																if (err) return callback(err);
-										                        return callback(null, api);
+
+																if (configHash === previousConfigHash) {
+																	changed = false;
+
+																	API.console.debug("Resolved config for '" + API.getTargetPath() + "' has not changed!");
+																	return callback(null);
+																}
+																return remove("config hash having changed from '" + previousConfigHash + "' to '" + configHash, callback);
+//																return remove("config hash having changed", callback);
+
+															})().then(function () {
+
+																resolvedConfig[resolvedSectionConfig.$to] = resolvedSectionConfig;
+
+																return API.Q.denodeify(API.FS.outputFile)(configHashPath, configHash, "utf8");
+															}).then(function () {
+
+																API.console.debug("Resolved config changed: " + changed);
+
+																if (!changed) {
+																	if (action === "turn") {
+																		if (!API.FS.existsSync(API.PATH.join(API.getTargetPath(), ".pinf.turn.done"))) {
+																			changed = true;
+																		}
+																	}
+																}
+
+																return [resolvedSectionConfig, changed];
 															});
 														});
+													}
+
+													return resolve(parsedConfig).fail(function (err) {
+														err.message += " (while resolving parsed config for node '" + parsedConfig.id + "')";
+														err.stack += "\n(while resolving parsed config for node '" + parsedConfig.id + "')";
+														throw err;
+													}).then(function (resolvedInfo) {
+
+														var resolvedSectionConfig = resolvedInfo[0];
+														var changed = resolvedInfo[1];
+
+														function runAction (action) {
+
+															function run () {
+																return Q.fcall(function () {
+																	if (!api) {
+																		if (!parsedConfig.config.$impl) {
+																			// Method not implemented by node which is ok.
+																			API.console.verbose("Skip call " + action + "() on '" + parsedConfig.id + "' as no code loaded! (due to $impl not set)");
+																			return;
+																		}
+												            console.log("locator", locator);
+												            console.log("parsedConfig", parsedConfig);
+												            console.log("resolvedSectionConfig", resolvedSectionConfig);
+												            throw new Error("No code loaded for '" + parsedConfig.id + "'. i.e. source code not found! This must be fixed or set '$impl: null'");
+																	}
+																	if (!api[action]) {
+																		// Method not implemented by node which is ok.
+														            	API.console.verbose("Skip call " + action + "() on '" + parsedConfig.id + "' as not implemented in loaded code module");
+																		return;
+																	}
+													            	API.console.verbose("Call " + action + "() on '" + parsedConfig.id + "' for:", API.getRootPath());
+																	// Call `turn`, `spin` and others (determined by `action`) on
+																	// plugin that has already been initialized with `for(API)`.
+																	return api[action](resolvedSectionConfig);
+																}).fail(function (err) {
+
+																	console.log("Fail and rename", err.stack);
+
+																	return API.Q.denodeify(API.FS.move)((API.getTargetPath(), API.PATH.join(API.getTargetPath() + ".failed." + Date.now()))).fin(function () {
+																		throw err;
+																	});
+																});
+															}
+
+															if (action === "turn") {
+
+																if (!changed) {
+																	API.console.debug("Skip running of '" + action + "' on '" + parsedConfig.id + "' as config has not changed!");
+																	return;
+																}
+
+																function updateRuntimeConfig () {
+																	var path = self.getRuntimeDescriptorPath();
+																	self.console.verbose("Updating runtime configuration to:", path);
+																	runtimeDescriptor[resolvedSectionConfig.$to] = resolvedSectionConfig;
+																	return self.Q.denodeify(self.FS.outputFile)(path, JSON.stringify(runtimeDescriptor, null, 4), "utf8");
+																}
+
+																return updateRuntimeConfig().then(function () {
+																	return run();
+																}).then(function () {
+																	return self.Q.denodeify(self.FS.outputFile)(API.PATH.join(API.getTargetPath(), ".pinf.turn.done"), "", "utf8");
+																});
+															} else
+															if (action === "spin") {
+
+																function ensureTurned () {
+																	if (!changed) return self.Q.resolve();
+
+																	API.console.verbose("Need to call turn before we can spin as config has changed.");
+
+																	return runAction("turn");
+																}
+
+																return ensureTurned().then(function () {
+																	return run();
+																});
+															}
+														}
+
+														return runAction(action);
+
+													}).then(function () {
+														return callback();
+													}).fail(callback);
+												});
+											}
+
+											function locate (uri, callback) {
+
+												function getImpl(callback) {
+													// TODO: Only resolve `{{$from.}}` in `$impl` variable. Everything else will get resolved later.
+													return parsedConfig.resolve(null).then(function (resolvedConfig) {
+														return callback(null, resolvedConfig.$impl);
 													}).fail(callback);
 												}
 
-												return run(api, callback);
+												return getImpl(function (err, implUri) {
+													if (err) return callback(err);
 
-						                    } catch (err) {
-						                    	return callback(err);
-						                    }
-					                    }, callback);
+													// 1) If the module acting as the node is declared we always go by that.
+													if (implUri) {
+														if (/^\//.test(implUri)) {
+
+															return API.FS.exists(implUri, function (exists) {
+																if (!exists) {
+																	return callback(new Error("Node implementation $impl: '" + implUri + "' not found!"));
+																}
+																return callback(null, implUri);
+/*
+																return API.findPackageRoot(implUri, function (err, implPackageRootPath) {
+																	if (err) return callback(err);
+																	return callback(null, implPackageRootPath);
+																});
+*/
+															});
+														}
+														return callback(new Error("'$impl' value of '" + implUri + "' not supported!"));
+													}
+/*
+													function getBootPackageDescriptor (callback) {
+														return self.programDescriptor.getBootPackageDescriptor().then(function (bootPackageDescriptor) {
+															return callback(null, bootPackageDescriptor._data);
+														}).fail(function (err) {
+															// If this errors out we ignore and assume there is not boot 
+															console.error("parsedConfig", parsedConfig);
+															return callback(err);
+														});
+													} 
+
+													return getBootPackageDescriptor(function (err, bootPackageDescriptor) {
+														if (err) return callback(err);
+
+														if (bootPackageDescriptor.uid === self.LOCATOR.fromConfigId(uri).getUid()) {
+															return callback(null, self.programDescriptor.getBootPackagePath());
+														}
+*/
+
+													// 2) Since no implementing module is declared we lookup the package based on the
+													//    config uri in our packages and look for the main module in the package.
+
+														var packageSourcePath = self.PATH.join(self.getPackagesDirpath(), uri.replace(/\//g, "~") + "~source");
+
+														return API.FS.exists(packageSourcePath, function (exists) {
+															if (!exists) {
+
+																// TODO: Dynamically download plugins.
+
+																var err = new Error("Plugin '" + uri + "' could not be found at '" + packageSourcePath + "'!");
+																err.code = 404;
+																return callback(err);
+															}
+
+						                	return API.PACKAGE.fromFile(self.PATH.join(packageSourcePath, "package.json"), function (err, pluginDescriptor) {
+						                		if (err) return callback(err);
+
+					                			pluginDescriptor = pluginDescriptor._data;
+
+//				                    		if (!pluginDescriptor.uid) {
+//				                    			return callback(new Error("Plugin descriptor '" + self.PATH.join(packageSourcePath, "package.json") + "' does not declare 'uid'!"));
+//				                    		}
+
+																var mainPath = self.PATH.join(packageSourcePath, pluginDescriptor.main || "");
+
+																return callback(null, mainPath);
+						                	});
+														});
+
+//													}).fail(callback);
+												});
+											}
+
+											return locate(parsedConfig.id, function (err, implPath) {
+												if (err) {
+													if (err.code === 404) {
+														// We simulate the node as there is no code.
+														return initNode(null, null, callback);
+													}
+													return callback(err);
+												}
+
+			                	self.console.verbose("Load node:", implPath);
+
+		                    return require.async(implPath, function (plugin) {
+			                	
+				                	self.console.debug("Node loaded:", implPath);
+
+				                	return initNode(pluginDescriptor, plugin, callback);
+		                    }, callback);
+											});
+										}
+
+	                	if (Object.keys(parsedConfig.depends).length === 0) {
+	                		return load(callback);
+	                	}
+	                	var waitfor = self.WAITFOR.serial(function (err) {
+	                		if (err) return callback(err);
+	                		return load(callback);
+	                	});
+	                	for (var name in parsedConfig.depends) {
+	                		waitfor(self.LOCATOR.fromConfigDepends(name), function (locator, callback) {
+	                			return loadAndRunPlugins(locator, history.concat(name), callback);
+	                		});
+	                	}
+	                	return waitfor();
+                	}
+									return loadAndRunPlugins(self.LOCATOR.fromConfigId(self.getBootConfigId()), [self.getBootConfigId()], function (err) {
+										if (err) {
+											err.message += " (for locater fromUid '" + self.getBootConfigId() + "')";
+											err.stack += "\n(for locater fromUid '" + self.getBootConfigId() + "')";
+										}
+										return callback(err);
 									});
+              	});
+              })().then(function () {
+
+								function writeRuntimeConfig () {
+									var path = self.getRuntimeDescriptorPath();
+									self.console.verbose("Writing runtime configuration to:", path);
+									return self.Q.denodeify(self.FS.outputFile)(path, JSON.stringify(resolvedConfig, null, 4), "utf8");
 								}
 
-			                	if (Object.keys(parsedConfig.depends).length === 0) {
-			                		return load(callback);
-			                	}
-			                	var waitfor = self.WAITFOR.serial(function (err) {
-			                		if (err) return callback(err);
-			                		return load(callback);
-			                	});
-			                	for (var name in parsedConfig.depends) {
-			                		waitfor(self.LOCATOR.fromConfigDepends(name), function (locator, callback) {
-			                			return loadAndRunPlugins(locator, callback);
-			                		});
-			                	}
-			                	return waitfor();
-		                	}
-							return loadAndRunPlugins(self.LOCATOR.fromUid(pluginDescriptor.uid), callback);
-		                })().then(function () {
-
-							function writeRuntimeConfig () {
-								var path = self.getRuntimeDescriptorPath();
-								self.console.verbose("Writing runtime configuration to:", path);
-								return self.Q.denodeify(self.FS.outputFile)(path, JSON.stringify(resolvedConfig, null, 4), "utf8");
-							}
-
-							return writeRuntimeConfig();
-		                });
-		            }
-		            actor.acted = true;
-		            return forEachProgram(API, function (api) {
-			            return init(api, impl).then(function (_api) {
-		                	API.console.verbose("Turn towards:", pluginDescriptor.uid);
-		                	api = augmentAPI(api, _api);
-			                return wire(_api).then(function () {
-			                    return callback();
+								return writeRuntimeConfig();
 			                });
-			            });
-		            }).fail(callback);
+			            }
+			            return forEachProgram(API, function (API) {
+
+				            return init(API, impl).then(function (api) {
+
+			                	API.console.verbose("Turn towards:", API.getBootConfigId());
+
+			                	api = augmentAPI(API, api);
+
+				                return wire(api).then(function () {
+
+				                	return API.runFor();
+				                });
+				            }).then(function () {
+
+			                	API.console.verbose("Turned towards:", API.getBootConfigId());
+		                	});
+			            }).then(function() {
+			            	return callback(null);
+			            }).fail(callback);
+			        });
 		        };
 		    }
 
@@ -314,19 +678,28 @@ exports.for = function (module, init, implementation) {
 		        .command("turn")
 		        .description("Take a PINF-compatible program and transform it to a PINF distribution bundle.")
 		        .action(actor("turn", implementation.turn, function (TURN) {
-		            return TURN.turn();
+		            return API.Q.fcall(function () {
+		            	return TURN.turn();
+		            });
 		        }, callback));
+
+            var turning = 0;
 
 		    program
 		        .command("spin")
 		        .description("Continuously turn on source change.")
 		        .action(actor("spin", implementation.spin, function (SPIN) {
+
 		            var deferred = API.Q.defer();
 		            SPIN.on("error", function (err) {
 		                return deferred.reject(err);
 		            });
-		            var turning = 0;
-		            function triggerTurn () {
+		            function triggerTurn (changed) {
+
+						// TODO: Instead of turning from beginning, turn from `changed`.
+
+//console.log("TURN FROM CHANGED!", changed, turning);
+
 		            	var doTurn = (turning === 0);
 		            	turning += 1;
 		            	if (!doTurn) {
@@ -337,6 +710,9 @@ exports.for = function (module, init, implementation) {
 			                return TURN.turn();
 			            }, function (err) {
 			            	turning -= 1;
+
+//console.log("DONE TURN FROM CHANGED!", changed, turning);
+
 			            	if (err) {
 			            		console.error("Error turning:", err.stack);
 			            	} else {
@@ -353,9 +729,10 @@ exports.for = function (module, init, implementation) {
 		            SPIN.on("end", function () {
 		                return deferred.resolve();
 		            });
-		            return SPIN.spin().then(function () {
-		                return deferred.promise;
-		            });
+		            API.Q.fcall(function () {
+		            	return SPIN.spin();
+		            }).then(deferred.resolve).fail(deferred.reject);
+			        return deferred.promise;
 		        }, callback));
 
 		    program.parse(process.argv);
