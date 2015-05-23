@@ -15,6 +15,7 @@
     "pinf-it-module-insight": "0.1.x",
     "pinf-it-package-insight": "0.1.x",
     "q": "^1.2.0",
+    "q-throttle": "^0.1.0",
     "request": "^2.53.0",
     "require.async": "^0.1.1",
     "waitfor": "^0.1.3",
