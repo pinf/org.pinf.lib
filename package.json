@@ -2,6 +2,7 @@
   "name": "org.pinf.lib",
   "version": "0.1.2",
   "dependencies": {
+    "JSONPath": "brettz9/JSONPath#19b6a87041",
     "bash.origin": "0.1.x",
     "changeset": "^0.1.0",
     "commander": "^2.7.1",
@@ -24,6 +25,18 @@
   "config": {
     "pio.deploy.converter": {
       "name": "nodejs-lib"
+    },
+    "org.pinf.genesis.lib/0": {
+      "api": {
+        "provides": {
+          "json-patch": "./api/json-patch.js"
+        },
+        "consumes": {
+          "config": "org.pinf.genesis.lib/0/config",
+          "Q": "q",
+          "json-patch": "./api/json-patch.js"
+        }
+      }
     }
   }
 }
