@@ -1,6 +1,6 @@
 {
   "name": "org.pinf.lib",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "dependencies": {
     "JSONPath": "brettz9/JSONPath#19b6a87041",
     "bash.origin": "0.1.x",
