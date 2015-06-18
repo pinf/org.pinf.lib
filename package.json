@@ -8,6 +8,7 @@
     "commander": "^2.7.1",
     "deepmerge": "^0.2.7",
     "escape-regexp-component": "^1.0.2",
+    "extend": "^2.0.1",
     "fs-extra": "^0.16.5",
     "graceful-fs": "^3.0.6",
     "pinf-for-nodejs": "0.1.x",
